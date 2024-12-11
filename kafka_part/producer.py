@@ -23,7 +23,7 @@ def producer_job(producer):
         }
         producer.send(MESSAGE_TOPIC, value=message)
         print("Message sent:", message)
-        time.sleep(1)
+        time.sleep(0.1)
     producer.close()
     print("producer closed:")
 

@@ -1,85 +1,62 @@
 import json
+from typing import Dict
 
-from pyflink.common import SimpleStringSchema, Types, WatermarkStrategy
-from pyflink.common.typeinfo import RowTypeInfo
-from pyflink.datastream import StreamExecutionEnvironment, DataStream, MapFunction
-from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer, KafkaRecordSerializationSchema, \
-    KafkaSink
-from pyflink.datastream.formats.json import JsonRowDeserializationSchema
 import redis
+from pyflink.common import SimpleStringSchema, WatermarkStrategy
+from pyflink.datastream import StreamExecutionEnvironment, DataStream, MapFunction
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
 from redis import Redis
 
+KAFKA_BOOTSTRAP_SERVER = "kafka:9092"
 
-def write_to_redis(redis_client: Redis, key, value):
+
+def write_to_redis(redis_client: Redis, key: int, value: str):
     try:
         redis_client.set(key, value)
         print(f"Data stored in Redis: {key} -> {value}")
     except Exception as e:
         print(f"Error writing to Redis: {e}")
 
-def read_from_redis(redis_client: Redis, key):
+
+def read_from_redis(redis_client: Redis, key: int):
     try:
-        value = redis_client.get(key)
+        value: str = redis_client.get(key)
         return value
     except Exception as e:
         print(f"Error writing to Redis: {e}")
 
 
+def get_values_from_redis_from_current_message_value(key, redis_client: Redis):
+    read_value: str = read_from_redis(redis_client, key)
+    if not read_value:
+        msg_value = 0
+        msg_count = 0
+    else:
+        msg = read_value.split(',')
+        msg_value = int(msg[0])
+        msg_count = int(msg[1])
+    return msg_value, msg_count
+
 
 class RedisMapperTs(MapFunction):
     def __init__(self):
         self.redis_client = None
+
     def map(self, value):
         if self.redis_client is None:
             self.redis_client = redis.StrictRedis(host='redis', port=6379, db=1, decode_responses=True)
-        print(value)
-        try:
-            value_dict = json.loads(value.replace("'", '"'))
-            key = value_dict['object_id']
-            read_value = read_from_redis(self.redis_client, key)
-            if not read_value:
-                msg_value = 0
-                msg_count = 0
-            else:
-                msg = read_value.split(',')
-                msg_value = int(msg[0])
-                msg_count = int(msg[1])
-            msg_new_value = msg_value + value_dict["timespent_ms"]
-            value_to_store = f'{msg_new_value},{msg_count+1}'
-            write_to_redis(self.redis_client, key, value_to_store)
-        except KeyError:
-            pass
+        value_dict: Dict[str, int] = json.loads(value.replace("'", '"'))
+        key: int = value_dict['object_id']
+        msg_value, msg_count = get_values_from_redis_from_current_message_value(key, self.redis_client)
+        msg_new_value = msg_value + value_dict['timespent_ms']
+        value_to_store = f'{msg_new_value},{msg_count + 1}'
+        write_to_redis(self.redis_client, key, value_to_store)
 
 
 class RedisMapperCtr(MapFunction):
     def __init__(self):
         self.redis_client = None
-    def map(self, value):
-        if self.redis_client is None:
-            self.redis_client = redis.StrictRedis(host='redis', port=6379, db=0, decode_responses=True)
-        # print(value)
-        try:
-            value_dict = json.loads(value.replace("'", '"'))
-            key = value_dict['object_id']
-            read_value = read_from_redis(self.redis_client, key)
-            if not read_value:
-                msg_value = 0
-                msg_count = 0
-            else:
-                msg = read_value.split(',')
-                msg_value = int(msg[0])
-                msg_count = int(msg[1])
-            like_count = 1 if value_dict['feedback'] == 'like' else 0
-            msg_new_value = msg_value + like_count
-            value_to_store = f'{msg_new_value},{msg_count+1}'
-            write_to_redis(self.redis_client, key, value_to_store)
-        except KeyError:
-            pass
 
-
-class RedisMapper(MapFunction):
-    def __init__(self):
-        self.redis_client = None
     def map(self, value):
         if self.redis_client is None:
             self.redis_client = redis.StrictRedis(host='redis', port=6379, db=0, decode_responses=True)
@@ -95,38 +72,24 @@ class RedisMapper(MapFunction):
                 msg_value = int(msg[0])
                 msg_count = int(msg[1])
             like_count = 1 if value_dict['feedback'] == 'like' else 0
-            count = value_dict["timespent_ms"]
             msg_new_value = msg_value + like_count
-            value_to_store = f'{msg_new_value},{msg_count+1}'
+            value_to_store = f'{msg_new_value},{msg_count + 1}'
             write_to_redis(self.redis_client, key, value_to_store)
         except KeyError:
             pass
-
-
-# redis_client_t = redis.Redis(host='localhost', port=6379, db=0)
-
-KAFKA_BOOTSTRAP_SERVER = "kafka:9092"
 
 
 def process():
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)
 
-    source_ctr = KafkaSource.builder() \
-        .set_bootstrap_servers(KAFKA_BOOTSTRAP_SERVER) \
-        .set_topics("object_ctr_topic") \
-        .set_group_id("object_ctr") \
-        .set_starting_offsets(KafkaOffsetsInitializer.earliest()) \
-        .set_value_only_deserializer(SimpleStringSchema()) \
-        .build()
+    source_ctr = KafkaSource.builder().set_bootstrap_servers(KAFKA_BOOTSTRAP_SERVER).set_topics(
+        "object_ctr_topic").set_group_id("object_ctr").set_starting_offsets(
+        KafkaOffsetsInitializer.earliest()).set_value_only_deserializer(SimpleStringSchema()).build()
 
-    source_ts = KafkaSource.builder() \
-        .set_bootstrap_servers(KAFKA_BOOTSTRAP_SERVER) \
-        .set_topics("object_mean_seen_ms_topic") \
-        .set_group_id("object_ts") \
-        .set_starting_offsets(KafkaOffsetsInitializer.earliest()) \
-        .set_value_only_deserializer(SimpleStringSchema()) \
-        .build()
+    source_ts = KafkaSource.builder().set_bootstrap_servers(KAFKA_BOOTSTRAP_SERVER).set_topics(
+        "object_mean_seen_ms_topic").set_group_id("object_ts").set_starting_offsets(
+        KafkaOffsetsInitializer.earliest()).set_value_only_deserializer(SimpleStringSchema()).build()
 
     # process
 
