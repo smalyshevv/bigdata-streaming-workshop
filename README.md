@@ -36,3 +36,6 @@ docker-compose exec jobmanager ./bin/flink run -py /opt/pyflink/flink_part/objec
 ```commandline
 docker-compose exec jobmanager ./bin/flink run -py /opt/pyflink/flink_part/to_cache.py -d  
 ```
+```commandline
+python3 kafka_part/producer.py
+```
